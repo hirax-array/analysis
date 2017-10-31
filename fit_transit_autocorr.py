@@ -1,16 +1,16 @@
 '''
 This script fits a Gaussian profile to a transit in autocorrelation data.
 
+This is a work in progress!
+
 To add:
-
-Currently, specify file. In future, search all autocorrelation files in directory and search for transits?
-
-Options for fitting at a single frequency bin, or averaging over a frequency band.
-
-If fitting over a band, options to remove RFI bands with custom absolute value flag, or standard deviations from median flag.
+*Currently, specify file. In future, search all autocorrelation files in directory and search for transits?
+*Fit Gaussian+median+slope
+*Remove RFI bands with standard deviation from median flag.
+*Implement parallel processing?
 
 Created: 2017-10-18 Ben Saliwanchik
-Modified: 2017-10-27
+Modified: 2017-10-31
 '''
 
 import os, glob, pickle, time, h5py
@@ -36,9 +36,9 @@ from functools import partial
 #pool.join()
 
 data_dir = '/home/bens/hirax_analysis'
-#data_file_name = data_dir+'/00000000_0000.h5' #Pic A
+data_file_name = data_dir+'/00000000_0000.h5' #Pic A
 #data_file_name = data_dir+'/00088140_0000.h5' #Pic A
-data_file_name = data_dir+'/00176102_0000.h5' #Pic A
+#data_file_name = data_dir+'/00176102_0000.h5' #Pic A
 #data_file_name = data_dir+'/00253068_0000.h5' #Pic A
 #data_file_name = data_dir+'/00341029_0000.h5' #Pic A
 #data_file_name = data_dir+'/00033165_0000.h5' #Fornax A
@@ -72,8 +72,9 @@ def fit_transit_autocorr():
   logging.info('Opening data file: '+data_file_name)
   data_file = h5py.File(data_file_name, 'r')
 
-  #Max RMS cutoff 
-  cutoff = 3.5e6
+  #RMS cutoff 
+  #cutoff = 3.5e6  #Old absolute value cutoff
+  cutoff = 3  #In sigma
 
   #Baseline number strings for plot labels
   prod = zip(*data_file['index_map']['prod'])
@@ -114,7 +115,6 @@ def fit_transit_autocorr():
     logging.info('Running baseline: '+baseline_num)
     logging.info('Test frequency: '+band_center+'MHz')  
 
-    #Bundle all baseline data together as single iterable for pool
     logging.info('Bundling baseline data for parallel processing...')
     baseline = data_file['vis'][:,freq,baseline_to_run]['r']
     baselines = data_file['vis'][:,:,baseline_to_run]['r']
@@ -177,7 +177,8 @@ def fit_transit_autocorr():
     rms = np.array(rms_list)
 
     #data cuts
-    good_rms_flag = np.ndarray.tolist(np.where(rms<cutoff)[0])
+    rms_std = np.std(rms) #Remove frequencies with RMS greater than cutoff std dev's above mean.
+    good_rms_flag = np.ndarray.tolist(np.where(rms<(cutoff*rms_std))[0])
     nonzero_x0_flag = np.ndarray.tolist(np.where(x0>0)[0])
     nonzero_sigma_flag = np.ndarray.tolist(np.where(sigma>0)[0])
     x0_sanity_flag = np.ndarray.tolist(np.where(x0<1024)[0])
@@ -197,6 +198,7 @@ def fit_transit_autocorr():
     logging.info('sigma = '+str(sigma_med[-1])+'+/-'+str(sigma_uncert[-1]))
 
     logging.info('Plotting...')
+   
     #Plot data for individual baselines
     plot_transit_params_vs_freq(data_quality_dir, band_centers[good_data], unix_times, baseline_num, x0[good_data], sigma[good_data], rms[good_data], cutoff) 
     logging.info(baseline_num+' done!')
@@ -250,9 +252,6 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
   _ = axis.plot(x,y, 'k', label='data')
   _ = axis.plot(x,fit_to_plot, 'b', label='fit')
   axis.legend()
-  #axis.xaxis_date()
-  #axis.xaxis.set_major_locator(dates.MinuteLocator(byminute=[0, 30]))
-  #axis.xaxis.set_major_formatter(dates.DateFormatter('%H:%M:%S'))
   axis.set_xlabel('UTC')
   _ = axis.set_xticks(x[0::100], minor=False)
   short_times = []
@@ -269,7 +268,6 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
   #Save and close figure
   plt.savefig(baseline_dir+'/transit_'+baseline_num+'_'+band_center+'MHz_'+isot_times[0]+'.png')    
   plt.close()
-  print baseline_dir+'/transit_'+baseline_num+'_'+band_center+'MHz_'+isot_times[0]+'.png'
   
 ########################################
 
@@ -277,7 +275,7 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
 
 
 ########################################
-#Plot transit fit parameters (x0, sigma) as a function of frequency
+#Plot transit fit parameters (x0, sigma, fwhm) as a function of frequency
 def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, baseline_num, x0, sigma, rms, cutoff):
   #Set up data for plot
   iso_times = Time(unix_times, format='unix').iso
@@ -303,7 +301,7 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   for n in range(len(iso_times)):
     short_times.append(iso_times[n].split(' ')[1][:-7])
   tick_times = short_times[0::100]
-  _ = axis.set_yticklabels(tick_times, rotation=90, minor=False)
+  _ = axis.set_yticklabels(tick_times, minor=False)
   plt.tight_layout()
 
   #Save and close figure
@@ -350,58 +348,6 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
 
   #Save and close figure
   plt.savefig(baseline_dir+'/rms_'+baseline_num+'_'+isot_times[0]+'.png')    
-  plt.close()
-
-  if len(x0)<2:
-    logging.info('Not enough good frequencies, skipping histograms.')
-    return
-
-  #Plot x0 distribution
-  fig, axis = plt.subplots()
-  axis.set_title('Transit Gaussian Fit for Baseline '+baseline_num)
-  _ = axis.hist(x0)
-  axis.set_ylabel('Frequency')
-  # Annotate with date of observation start
-  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
-  axis.set_ylabel('Transit peak time (UTC)')
-  _ = axis.set_xticks(x0[0::100], minor=False)
-  short_times = []
-  for n in range(len(iso_times)):
-    short_times.append(iso_times[n].split(' ')[1][:-7])
-  tick_times = short_times[0::100]
-  _ = axis.set_xticklabels(tick_times, rotation=90, minor=False)
-  plt.tight_layout()
-
-  #Save and close figure
-  plt.savefig(baseline_dir+'/transit_x0_dist_'+baseline_num+'_'+isot_times[0]+'.png')    
-  plt.close()
-
-  #Plot sigma distribution
-  fig, axis = plt.subplots()
-  axis.set_title('Transit Gaussian Fit for Baseline '+baseline_num)
-  _ = axis.hist(sigma)
-  axis.set_ylabel('Frequency')
-  # Annotate with date of observation start
-  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
-  axis.set_xlabel('Transit width /sigma [degrees]')
-  plt.tight_layout()
-
-  #Save and close figure
-  plt.savefig(baseline_dir+'/transit_sigma_dist_'+baseline_num+'_'+isot_times[0]+'.png')    
-  plt.close()
-
-  #Data rms distribution
-  fig, axis = plt.subplots()
-  axis.set_title('Transit Gaussian Fit for Baseline '+baseline_num)
-  _ = axis.hist(rms)
-  axis.set_ylabel('Frequency')
-  # Annotate with date of observation start
-  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
-  axis.set_xlabel('Baseline RMS')
-  plt.tight_layout()
-
-  #Save and close figure
-  plt.savefig(baseline_dir+'/rms_dist_'+baseline_num+'_'+isot_times[0]+'.png')    
   plt.close()
 
 ########################################
