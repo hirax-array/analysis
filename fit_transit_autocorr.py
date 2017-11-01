@@ -74,7 +74,7 @@ def fit_transit_autocorr():
 
   #RMS cutoff 
   #cutoff = 3.5e6  #Old absolute value cutoff
-  cutoff = 3  #In sigma
+  cutoff = 2  #In sigma
 
   #Baseline number strings for plot labels
   prod = zip(*data_file['index_map']['prod'])
@@ -96,6 +96,8 @@ def fit_transit_autocorr():
   #Angular size of pixels/samples: 0.044862 degrees
   angles = np.array(range(len(unix_times)))*0.044862
   times = np.array(range(len(unix_times)))*10.74
+  time_to_deg = 0.004178
+  sample_to_time = 10.74
 
   #baseline (14,14) is 133, baseline (15,15) is 135
   #baseline (12,12) is 126, baseline (13,13) is 130
@@ -109,7 +111,7 @@ def fit_transit_autocorr():
   autocorrelations = [0, 16, 31, 45, 58, 70, 81, 91, 100, 108, 115, 121, 126, 130, 133, 135]
   x0_med, x0_uncert, sigma_med, sigma_uncert = ([] for n in range(4))
   for baseline_to_run in autocorrelations:
-    freq = 512
+    freq = 512 #960
     baseline_num = baseline_nums[baseline_to_run]
     band_center = str(band_centers[freq])
     logging.info('Running baseline: '+baseline_num)
@@ -122,21 +124,31 @@ def fit_transit_autocorr():
     logging.info('Generating parameter estimates...')
     #Check if frequency bin is railed
     if np.median(baseline)!=max(baseline):
-      y = baseline-np.median(baseline)
-      x = angles
-      x0_est =  np.where(y==max(y))[0][0]
-      sigma_est = x0_est-np.where(y>0.68*np.array(max(y)))[0][0]
- 
+      y = baseline#-np.median(baseline)
+      x = times
+      a_est = max(y)-np.median(y)
+      x0_est =  sample_to_time*np.array(np.where(y==max(y))[0][0])
+      sigma_est = 1e-10+np.abs(x0_est-sample_to_time*np.array(np.where(y>(np.median(y)+0.61*a_est))[0][0]))
+      m_est = 0.0
+      b_est = np.median(y)
+      p_est = [a_est, x0_est, sigma_est, m_est, b_est]
+      print p_est
+      
       logging.info('Fitting Gaussian profile at test frequency...')
-      try:
-        popt,pcov = curve_fit(gaussian,x,y,p0=[max(y),x0_est,sigma_est])
-        logging.info('Gaussian fit values: ')
-        logging.info(popt)
+      #try:
+        #Pure Gaussian
+        #popt,pcov = curve_fit(gaussian,x,y,p0=[max(y),x0_est,sigma_est])
+        #Gaussian plus linear function
+      param_bounds = ((0,0,1e-10,-np.inf,-np.inf),(np.inf,np.inf,np.inf,np.inf,np.inf))
+      popt,pcov = curve_fit(gauss_lin,x,y,p0=p_est,bounds=param_bounds) 
+      logging.info('Gaussian fit values: ')
+      logging.info(popt)
 
-        logging.info('Plotting at test frequency...')
-        plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, x, y)
-      except:
-        logging.info('Fit failed at test frequency. Skipping plots.') 
+      logging.info('Plotting at test frequency...')
+      plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, x, y)
+      #except:
+      #  logging.info('Fit failed at test frequency. Plotting estimated parameters.') 
+      #  plot_transit(data_quality_dir, unix_times, baseline_num, band_center, p_est, x, y)
 
     else:
       logging.info('Test frequency bin railed. Skipping plots.')
@@ -156,15 +168,23 @@ def fit_transit_autocorr():
         sigma_list.append(0)
         rms_list.append(0)
         continue
-      y = baselines[:,freq]-np.median(baselines[:,freq])
-      x0_est =  np.where(y==max(y))[0][0]
-      sigma_est = x0_est-np.where(y>0.68*np.array(max(y)))[0][0]   
+      y = baselines[:,freq]
+      a_est = max(y)-np.median(y)
+      x0_est =  sample_to_time*np.array(np.where(y==max(y))[0][0])
+      sigma_est = 1e-10+np.abs(x0_est-sample_to_time*np.array(np.where(y>0.61*np.array(max(y)))[0][0]))
+      m_est = 0.0
+      b_est = np.median(y)
+      p_est = [a_est,x0_est,sigma_est,m_est,b_est]
+      #x0_est =  np.where(y==max(y))[0][0]
+      #sigma_est = np.abs(x0_est-np.where(y>0.61*np.array(max(y)))[0][0])   
       rms_list.append(np.std(baselines[:,freq]))
 
       try: 
-        popt,pcov = curve_fit(gaussian,x,y,p0=[max(y),x0_est,sigma_est]) 
-        x0_list.append(abs(popt[1]))
-        sigma_list.append(abs(popt[2]))
+        #popt,pcov = curve_fit(gaussian,x,y,p0=[max(y),x0_est,sigma_est]) 
+        param_bounds = ([0,0,1e-10,-np.inf,-np.inf],[np.inf,np.inf,np.inf,np.inf,np.inf])
+        popt,pcov = curve_fit(gauss_lin,x,y,p0=p_est,bounds=param_bounds) 
+        x0_list.append(np.abs(popt[1]))
+        sigma_list.append(np.abs(popt[2]))
       except:
         n_unfittable += 1
         logging.debug('Fit failed for frequency '+str(band_centers[freq])+'MHz.')
@@ -177,12 +197,13 @@ def fit_transit_autocorr():
     rms = np.array(rms_list)
 
     #data cuts
+    rms_med = np.median(rms)
     rms_std = np.std(rms) #Remove frequencies with RMS greater than cutoff std dev's above mean.
-    good_rms_flag = np.ndarray.tolist(np.where(rms<(cutoff*rms_std))[0])
+    good_rms_flag = np.ndarray.tolist(np.where(rms<(rms_med+cutoff*rms_std))[0])
     nonzero_x0_flag = np.ndarray.tolist(np.where(x0>0)[0])
     nonzero_sigma_flag = np.ndarray.tolist(np.where(sigma>0)[0])
-    x0_sanity_flag = np.ndarray.tolist(np.where(x0<1024)[0])
-    sigma_sanity_flag = np.ndarray.tolist(np.where(sigma<1024)[0])
+    x0_sanity_flag = np.ndarray.tolist(np.where(x0<sample_to_time*1024)[0])
+    sigma_sanity_flag = np.ndarray.tolist(np.where(sigma<sample_to_time*1024)[0])
     good_data = list(set(good_rms_flag) & set(nonzero_x0_flag) & set(nonzero_sigma_flag) & set(x0_sanity_flag) & set(sigma_sanity_flag)) 
     logging.info('Number of railed freqs: '+str(n_railed))
     logging.info('Number of unfittable freqs: '+str(n_unfittable))
@@ -200,7 +221,7 @@ def fit_transit_autocorr():
     logging.info('Plotting...')
    
     #Plot data for individual baselines
-    plot_transit_params_vs_freq(data_quality_dir, band_centers[good_data], unix_times, baseline_num, x0[good_data], sigma[good_data], rms[good_data], cutoff) 
+    plot_transit_params_vs_freq(data_quality_dir, band_centers[good_data], unix_times, baseline_num, x0[good_data], sigma[good_data], rms[good_data]) 
     logging.info(baseline_num+' done!')
     logging.info(' ')
 
@@ -230,6 +251,15 @@ def gaussian(x,a,x0,sigma):
 
 
 
+
+########################################
+def gauss_lin(x,a,x0,sigma,m,b):
+  return a*np.exp(-(x-x0)**2/(2*(sigma)**2))+m*x+b
+########################################
+
+
+
+
 ########################################
 #Plot transit visibilities for a single baseline and freq
 def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, x, y):
@@ -238,7 +268,7 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
   datetimes = Time(unix_times, format='unix').datetime
   iso_times = Time(unix_times, format='unix').iso
   isot_times = Time(unix_times, format='unix').isot
-  fit_to_plot = gaussian(x,*popt)
+  fit_to_plot = gauss_lin(x,*popt)
 
   #Make plot directory
   baseline_dir = data_quality_dir+'/baseline_'+baseline_num
@@ -276,10 +306,12 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
 
 ########################################
 #Plot transit fit parameters (x0, sigma, fwhm) as a function of frequency
-def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, baseline_num, x0, sigma, rms, cutoff):
+def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, baseline_num, x0, sigma_time, rms):
   #Set up data for plot
   iso_times = Time(unix_times, format='unix').iso
   isot_times = Time(unix_times, format='unix').isot
+  time_to_deg = 0.004178
+  sigma = time_to_deg*np.array(sigma_time)
   fwhm = 2*np.sqrt(2*np.log(2))*np.array(sigma)
 
   #Make plot directory
@@ -296,12 +328,13 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   axis.set_xlabel('Frequency [MHz]')
   axis.set_ylabel('Transit peak time (UTC)')
-  _ = axis.set_yticks(x0[0::100], minor=False)
-  short_times = []
-  for n in range(len(iso_times)):
-    short_times.append(iso_times[n].split(' ')[1][:-7])
-  tick_times = short_times[0::100]
-  _ = axis.set_yticklabels(tick_times, minor=False)
+  #_ = axis.set_yticks(x0[0::100], minor=False)
+  #short_times = []
+  #for n in range(len(iso_times)):
+  #  short_times.append(iso_times[n].split(' ')[1][:-7])
+  #tick_times = short_times[0::100]
+  #_ = axis.set_yticklabels(tick_times, minor=False)
+  axis.set_ylim([0,6000])  
   plt.tight_layout()
 
   #Save and close figure
@@ -316,6 +349,7 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   # Annotate with date of observation start
   axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   axis.set_xlabel('Frequency [MHz]')
+  axis.set_ylim([0,10])
   plt.tight_layout()
 
   #Save and close figure
@@ -330,6 +364,7 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   # Annotate with date of observation start
   axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   axis.set_xlabel('Frequency [MHz]')
+  axis.set_ylim([0,20])
   plt.tight_layout()
 
   #Save and close figure
@@ -356,10 +391,13 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
 
 ########################################
 #Plot comparisons of transit parameters between dishes and polarizations
-def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma, sigma_uncert):
+def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma_time, sigma_uncert_time):
   #Set up data for plot
   iso_times = Time(unix_times, format='unix').iso
   isot_times = Time(unix_times, format='unix').isot
+  time_to_deg = 0.004178
+  sigma = time_to_deg*np.array(sigma_time)
+  sigma_uncert = time_to_deg*np.array(sigma_uncert_time)
   fwhm = 2.*np.sqrt(2.*np.log(2.))*np.array(sigma)
   fwhm_uncert = 2.*np.sqrt(2.*np.log(2.))*np.array(sigma_uncert)
 
@@ -369,12 +407,12 @@ def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma, sigma_u
   _ = axis.errorbar(range(len(x0)),x0,yerr=x0_uncert,fmt='ok')
   axis.set_xlabel('Correlator Channel')
   axis.set_ylabel('Transit peak time (UTC)')
-  _ = axis.set_yticks(x0[0::10], minor=False)
-  short_times = []
-  for n in range(len(iso_times)):
-    short_times.append(iso_times[n].split(' ')[1][:-7])
-  tick_times = short_times[0::10]
-  _ = axis.set_yticklabels(tick_times, minor=False)
+  #_ = axis.set_yticks(x0[0::10], minor=False)
+  #short_times = []
+  #for n in range(len(iso_times)):
+  #  short_times.append(iso_times[n].split(' ')[1][:-7])
+  #tick_times = short_times[0::10]
+  #_ = axis.set_yticklabels(tick_times, minor=False)
   axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   plt.tight_layout()
 
