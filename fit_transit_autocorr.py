@@ -10,7 +10,7 @@ To add:
 *Implement parallel processing?
 
 Created: 2017-10-18 Ben Saliwanchik
-Modified: 2017-10-31
+Modified: 2017-11-03
 '''
 
 import os, glob, pickle, time, h5py
@@ -22,6 +22,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import dates
 from astropy.time import Time
+from astropy import units as u
 import datetime, logging
 
 import multiprocessing
@@ -36,13 +37,24 @@ from functools import partial
 #pool.join()
 
 data_dir = '/home/bens/hirax_analysis'
-data_file_name = data_dir+'/00000000_0000.h5' #Pic A
-#data_file_name = data_dir+'/00088140_0000.h5' #Pic A
-#data_file_name = data_dir+'/00176102_0000.h5' #Pic A
-#data_file_name = data_dir+'/00253068_0000.h5' #Pic A
-#data_file_name = data_dir+'/00341029_0000.h5' #Pic A
-#data_file_name = data_dir+'/00033165_0000.h5' #Fornax A
+#data_file_name = data_dir+'/00000000_0000.h5' #Galactic Plane
+#data_file_name = data_dir+'/00088140_0000.h5' #Gal. Plane
+#data_file_name = data_dir+'/00176102_0000.h5' #Gal. Plane
+#data_file_name = data_dir+'/00253068_0000.h5' #Gal. Plane
+#data_file_name = data_dir+'/00341029_0000.h5' #Gal. Plane
+#data_file_name = data_dir+'/00033165_0000.h5' #Fornax A 2017/10/15
+data_file_name = data_dir+'/00121126_0000.h5' #Fornax A 10/16
+#data_file_name = data_dir+'/00209087_0000.h5' #Fornax A 10/17
+#data_file_name = data_dir+'/00297049_0000.h5' #Fornax A 10/18
 data_quality_dir = data_dir+'/data_quality'
+
+#Source_intensity, converting [Jy] to [W*m^-2*Hz^-1]
+#PicA: 166 Jy; 5h19m, -45d46m
+#FornaxA: 259 Jy; 3h22m, -37d12m
+source_intensity = 259e-26 #Fornax A T_c = 20 #[K]
+eta = 0.5 #Wild guess at dish efficiency
+k_B = 1.38064852e-23 #Boltzmann constant [m^2*kg*s^-2*K^-1]
+c = 2.99792458e8 #[m/s]
 
 if not os.path.exists(data_quality_dir):
   os.mkdir(data_quality_dir)
@@ -109,7 +121,7 @@ def fit_transit_autocorr():
   #baseline (0,0) is 0, baseline (1, 1) is 16
 
   autocorrelations = [0, 16, 31, 45, 58, 70, 81, 91, 100, 108, 115, 121, 126, 130, 133, 135]
-  x0_med, x0_uncert, sigma_med, sigma_uncert = ([] for n in range(4))
+  x0_med, x0_uncert, sigma_med, sigma_uncert, T_sys_med, T_sys_uncert = ([] for n in range(6))
   for baseline_to_run in autocorrelations:
     freq = 512 #960
     baseline_num = baseline_nums[baseline_to_run]
@@ -135,20 +147,33 @@ def fit_transit_autocorr():
       print p_est
       
       logging.info('Fitting Gaussian profile at test frequency...')
-      #try:
+      try:
         #Pure Gaussian
         #popt,pcov = curve_fit(gaussian,x,y,p0=[max(y),x0_est,sigma_est])
         #Gaussian plus linear function
-      param_bounds = ((0,0,1e-10,-np.inf,-np.inf),(np.inf,np.inf,np.inf,np.inf,np.inf))
-      popt,pcov = curve_fit(gauss_lin,x,y,p0=p_est,bounds=param_bounds) 
-      logging.info('Gaussian fit values: ')
-      logging.info(popt)
+        param_bounds = ((0,0,1e-10,-np.inf,-np.inf),(np.inf,np.inf,np.inf,np.inf,np.inf))
+        popt,pcov = curve_fit(gauss_lin,x,y,p0=p_est,bounds=param_bounds) 
+        logging.info('Gaussian fit values: ')
+        logging.info(popt)
 
-      logging.info('Plotting at test frequency...')
-      plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, x, y)
-      #except:
-      #  logging.info('Fit failed at test frequency. Plotting estimated parameters.') 
-      #  plot_transit(data_quality_dir, unix_times, baseline_num, band_center, p_est, x, y)
+        logging.info('Plotting at test frequency...')
+        plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, x, y)
+    
+        #Calculate Tsys at test frequency
+        Omega = 0.5*np.pi*(time_to_deg*popt[2]*np.pi/180)**2 #0.5*pi*sigma^2, or pi*fwhm^2/(4*ln(2)). pi/180 is deg to rad conversion
+        lmbd = c/(float(band_centers[freq])*1e6)
+        T_h = (source_intensity*(lmbd**2))/(2*k_B*eta*Omega) #In Rayleigh-Jeans limit
+        y_factor = (popt[0]+popt[4])/popt[4] #P_h/P_c !!!popt[4] is only a good approximation of P_c if popt[3] is small!!!
+        T_sys = (T_h - y_factor*T_c)/(y_factor - 1)
+        print 'Omega: '+str(Omega)
+        print 'lambda: '+str(lmbd)
+        print 'T_h: '+str(T_h)
+        print 'y: '+str(y_factor)
+        print 'T_sys: '+str(T_sys)
+
+      except:
+        logging.info('Fit failed at test frequency. Plotting estimated parameters.') 
+        plot_transit(data_quality_dir, unix_times, baseline_num, band_center, p_est, x, y)
 
     else:
       logging.info('Test frequency bin railed. Skipping plots.')
@@ -157,6 +182,7 @@ def fit_transit_autocorr():
     x0_list = []
     sigma_list = []
     rms_list = []
+    T_sys = []
     n_railed = 0
     n_unfittable = 0
     logging.info('Fitting Gaussian profile at each frequency...')
@@ -185,6 +211,14 @@ def fit_transit_autocorr():
         popt,pcov = curve_fit(gauss_lin,x,y,p0=p_est,bounds=param_bounds) 
         x0_list.append(np.abs(popt[1]))
         sigma_list.append(np.abs(popt[2]))
+
+        #Calculate Tsys at this frequency
+        Omega = 0.5*np.pi*(time_to_deg*popt[2]*np.pi/180)**2 #0.5*pi*sigma^2, or pi*fwhm^2/(4*ln(2)). pi/180 is deg to rad conversion
+        lmbd = c/(float(band_centers[freq])*1e6)
+        T_h = (source_intensity*(lmbd**2))/(2*k_B*eta*Omega) #In Rayleigh-Jeans limit
+        y_factor = (popt[0]+popt[4])/popt[4] #P_h/P_c !!!popt[4] is only a good approximation of P_c if popt[3] is small!!!
+        T_sys.append((T_h - y_factor*T_c)/(y_factor - 1))
+
       except:
         n_unfittable += 1
         logging.debug('Fit failed for frequency '+str(band_centers[freq])+'MHz.')
@@ -215,21 +249,23 @@ def fit_transit_autocorr():
     sigma_med.append(np.median(sigma[good_data]))
     x0_uncert.append(np.std(x0[good_data]))
     sigma_uncert.append(np.std(sigma[good_data]))
+    T_sys_med.append(np.median(T_sys[good_data]))
+    T_sys_uncert.append(np.std(T_sys[good_data]))
     logging.info('x0 = '+str(x0_med[-1])+'+/-'+str(x0_uncert[-1]))
     logging.info('sigma = '+str(sigma_med[-1])+'+/-'+str(sigma_uncert[-1]))
 
     logging.info('Plotting...')
    
     #Plot data for individual baselines
-    plot_transit_params_vs_freq(data_quality_dir, band_centers[good_data], unix_times, baseline_num, x0[good_data], sigma[good_data], rms[good_data]) 
+    plot_transit_params_vs_freq(data_quality_dir, band_centers[good_data], unix_times, baseline_num, x0[good_data], sigma[good_data], rms[good_data], T_sys[good_data]) 
     logging.info(baseline_num+' done!')
     logging.info(' ')
 
   #Plot comparisons across dishes
-  plot_comparisons(data_quality_dir, unix_times, x0_med, x0_uncert, sigma_med, sigma_uncert)
+  plot_comparisons(data_quality_dir, unix_times, x0_med, x0_uncert, sigma_med, sigma_uncert, T_sys_med, T_sys_uncert)
 
   #Save test baseline and fit statistics for temporal stability analysis
-  fit_stats = [iso_times, band_centers, baseline, x0_med, x0_uncert, sigma_med, sigma_uncert]
+  fit_stats = [iso_times, band_centers, baseline, x0_med, x0_uncert, sigma_med, sigma_uncert, T_sys_med, T_sys_uncert]
   stats_file = data_quality_dir+'/fit_stats_'+isot_times[0]+'.pkl'
   f = open(stats_file, 'wb')
   pickle.dump(fit_stats, f)
@@ -306,7 +342,7 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
 
 ########################################
 #Plot transit fit parameters (x0, sigma, fwhm) as a function of frequency
-def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, baseline_num, x0, sigma_time, rms):
+def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, baseline_num, x0, sigma_time, rms, T_sys):
   #Set up data for plot
   iso_times = Time(unix_times, format='unix').iso
   isot_times = Time(unix_times, format='unix').isot
@@ -385,13 +421,28 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   plt.savefig(baseline_dir+'/rms_'+baseline_num+'_'+isot_times[0]+'.png')    
   plt.close()
 
+  #Plot T_sys vs freq
+  fig, axis = plt.subplots()
+  axis.set_title('System Temperature for Baseline '+baseline_num)
+  _ = axis.plot(band_centers,T_sys,'k.')
+  axis.set_ylabel('T_sys [K]')
+  # Annotate with date of observation start
+  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
+  axis.set_xlabel('Frequency [MHz]')
+  axis.set_ylim([0,20])
+  plt.tight_layout()
+
+  #Save and close figure
+  plt.savefig(baseline_dir+'/transit_T_sys_'+baseline_num+'_'+isot_times[0]+'.png')    
+  plt.close()
+
 ########################################
 
 
 
 ########################################
 #Plot comparisons of transit parameters between dishes and polarizations
-def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma_time, sigma_uncert_time):
+def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma_time, sigma_uncert_time, T_sys, T_sys_uncert):
   #Set up data for plot
   iso_times = Time(unix_times, format='unix').iso
   isot_times = Time(unix_times, format='unix').isot
@@ -444,6 +495,19 @@ def plot_comparisons(data_quality_dir, unix_times, x0, x0_uncert, sigma_time, si
 
   #Save and close figure
   plt.savefig(data_quality_dir+'/transit_fwhm_comparison_'+isot_times[0]+'.png')    
+  plt.close()
+
+  #Plot T_sys comparison
+  fig, axis = plt.subplots()
+  axis.set_title('System Temperature Comparison')
+  _ = axis.errorbar(range(len(x0)),T_sys,yerr=T_sys_uncert,fmt='ok')
+  axis.set_ylabel('T_sys [K]')
+  axis.set_xlabel('Correlator Channel')
+  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
+  plt.tight_layout()
+
+  #Save and close figure
+  plt.savefig(data_quality_dir+'/transit_T_sys_comparison_'+isot_times[0]+'.png')    
   plt.close()
 
 ########################################
