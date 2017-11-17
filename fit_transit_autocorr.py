@@ -10,7 +10,7 @@ To add:
 *Implement parallel processing?
 
 Created: 2017-10-18 Ben Saliwanchik
-Modified: 2017-11-03
+Modified: 2017-11-17
 '''
 
 import os, glob, pickle, time, h5py
@@ -43,15 +43,16 @@ data_dir = '/home/bens/hirax_analysis'
 #data_file_name = data_dir+'/00253068_0000.h5' #Gal. Plane
 #data_file_name = data_dir+'/00341029_0000.h5' #Gal. Plane
 #data_file_name = data_dir+'/00033165_0000.h5' #Fornax A 2017/10/15
-data_file_name = data_dir+'/00121126_0000.h5' #Fornax A 10/16
+#data_file_name = data_dir+'/00121126_0000.h5' #Fornax A 10/16
 #data_file_name = data_dir+'/00209087_0000.h5' #Fornax A 10/17
-#data_file_name = data_dir+'/00297049_0000.h5' #Fornax A 10/18
+data_file_name = data_dir+'/00297049_0000.h5' #Fornax A 10/18
 data_quality_dir = data_dir+'/data_quality'
 
 #Source_intensity, converting [Jy] to [W*m^-2*Hz^-1]
 #PicA: 166 Jy; 5h19m, -45d46m
 #FornaxA: 259 Jy; 3h22m, -37d12m
-source_intensity = 259e-26 #Fornax A T_c = 20 #[K]
+source_intensity = 259e-26 #Fornax A 
+T_c = 20 #[K]
 eta = 0.5 #Wild guess at dish efficiency
 k_B = 1.38064852e-23 #Boltzmann constant [m^2*kg*s^-2*K^-1]
 c = 2.99792458e8 #[m/s]
@@ -123,7 +124,7 @@ def fit_transit_autocorr():
   autocorrelations = [0, 16, 31, 45, 58, 70, 81, 91, 100, 108, 115, 121, 126, 130, 133, 135]
   x0_med, x0_uncert, sigma_med, sigma_uncert, T_sys_med, T_sys_uncert = ([] for n in range(6))
   for baseline_to_run in autocorrelations:
-    freq = 512 #960
+    freq = 960
     baseline_num = baseline_nums[baseline_to_run]
     band_center = str(band_centers[freq])
     logging.info('Running baseline: '+baseline_num)
@@ -162,7 +163,7 @@ def fit_transit_autocorr():
         #Calculate Tsys at test frequency
         Omega = 0.5*np.pi*(time_to_deg*popt[2]*np.pi/180)**2 #0.5*pi*sigma^2, or pi*fwhm^2/(4*ln(2)). pi/180 is deg to rad conversion
         lmbd = c/(float(band_centers[freq])*1e6)
-        T_h = (source_intensity*(lmbd**2))/(2*k_B*eta*Omega) #In Rayleigh-Jeans limit
+        T_h = (source_intensity*(lmbd**2))/(2*k_B*eta*Omega)+T_c #In Rayleigh-Jeans limit
         y_factor = (popt[0]+popt[4])/popt[4] #P_h/P_c !!!popt[4] is only a good approximation of P_c if popt[3] is small!!!
         T_sys = (T_h - y_factor*T_c)/(y_factor - 1)
         print 'Omega: '+str(Omega)
@@ -179,12 +180,8 @@ def fit_transit_autocorr():
       logging.info('Test frequency bin railed. Skipping plots.')
 
     #Now try at every frequency, and plot x0 and sigma as func of freq
-    x0_list = []
-    sigma_list = []
-    rms_list = []
-    T_sys = []
-    n_railed = 0
-    n_unfittable = 0
+    x0_list, sigma_list, rms_list, T_sys_list, = ([] for n in range(4))
+    n_railed, n_unfittable = (0 for n in range(2))
     logging.info('Fitting Gaussian profile at each frequency...')
     for freq in range(len(band_centers)):
       if np.median(baselines[:,freq])==max(baselines[:,freq]):
@@ -193,6 +190,7 @@ def fit_transit_autocorr():
         x0_list.append(0)
         sigma_list.append(0)
         rms_list.append(0)
+        T_sys_list.append(0)
         continue
       y = baselines[:,freq]
       a_est = max(y)-np.median(y)
@@ -216,8 +214,8 @@ def fit_transit_autocorr():
         Omega = 0.5*np.pi*(time_to_deg*popt[2]*np.pi/180)**2 #0.5*pi*sigma^2, or pi*fwhm^2/(4*ln(2)). pi/180 is deg to rad conversion
         lmbd = c/(float(band_centers[freq])*1e6)
         T_h = (source_intensity*(lmbd**2))/(2*k_B*eta*Omega) #In Rayleigh-Jeans limit
-        y_factor = (popt[0]+popt[4])/popt[4] #P_h/P_c !!!popt[4] is only a good approximation of P_c if popt[3] is small!!!
-        T_sys.append((T_h - y_factor*T_c)/(y_factor - 1))
+        y_factor = (popt[0]+popt[4])/popt[4] #P_h/P_c !!!popt[4] is only a good approximation of P_c if popt[3] is small!!! 
+        T_sys_list.append((T_h - y_factor*T_c)/(y_factor - 1))
 
       except:
         n_unfittable += 1
@@ -225,10 +223,12 @@ def fit_transit_autocorr():
         #zero values will be stripped out in data cuts
         x0_list.append(0)
         sigma_list.append(0)
+        T_sys_list.append(0)
 
     x0 = np.array(x0_list)
     sigma = np.array(sigma_list)
     rms = np.array(rms_list)
+    T_sys = np.array(T_sys_list)
 
     #data cuts
     rms_med = np.median(rms)
@@ -429,7 +429,7 @@ def plot_transit_params_vs_freq(data_quality_dir, band_centers, unix_times, base
   # Annotate with date of observation start
   axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   axis.set_xlabel('Frequency [MHz]')
-  axis.set_ylim([0,20])
+  axis.set_ylim([0,300])
   plt.tight_layout()
 
   #Save and close figure
