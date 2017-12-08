@@ -124,7 +124,7 @@ def fit_transit_autocorr():
   autocorrelations = [0, 16, 31, 45, 58, 70, 81, 91, 100, 108, 115, 121, 126, 130, 133, 135]
   x0_med, x0_uncert, sigma_med, sigma_uncert, T_sys_med, T_sys_uncert = ([] for n in range(6))
   for baseline_to_run in autocorrelations:
-    freq = 960
+    freq = 896 #512
     baseline_num = baseline_nums[baseline_to_run]
     band_center = str(band_centers[freq])
     logging.info('Running baseline: '+baseline_num)
@@ -314,7 +314,7 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
 
   #Specify plot details
   fig, axis = plt.subplots()
-  axis.set_title('Transit for Baseline '+baseline_num+' at '+band_center+' MHz')
+  axis.set_title('Transit for Baseline '+baseline_num+' at '+band_center+' MHz //  FWHM = '+str(popt[3]).split('.')[0]+'s')
   _ = axis.plot(x,y, 'k', label='data')
   _ = axis.plot(x,fit_to_plot, 'b', label='fit')
   axis.legend()
@@ -327,7 +327,7 @@ def plot_transit(data_quality_dir, unix_times, baseline_num, band_center, popt, 
   _ = axis.set_xticklabels(tick_times, rotation=90, minor=False)
 
   # Annotate with date of observation start
-  axis.text(-0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
+  axis.text(0.015, 1.02, iso_times[0].split(' ')[0], ha='right', va='bottom', transform=axis.transAxes)
   axis.set_ylabel('Amplitude')
   plt.tight_layout()
 
